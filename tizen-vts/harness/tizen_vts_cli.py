@@ -4,6 +4,7 @@ import stat # Required for checking execute permissions more robustly
 import subprocess # For executing SDB commands
 import xml.etree.ElementTree as ET # For parsing GTest XML
 import datetime # For report timestamps
+import fnmatch # For test name pattern matching
 
 # Default directory where compiled test executables are expected to be found,
 # relative to the location of this script.
@@ -19,6 +20,13 @@ DEFAULT_HOST_RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "result
 
 # SDB executable path (can be overridden by --sdb-path argument)
 SDB_EXECUTABLE = "sdb"
+
+# --- Logging Helper ---
+def log_verbose(message, args, level=1):
+    """Prints a verbose message if the verbosity level is met."""
+    if args.verbose >= level:
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        print(f"{timestamp} VERBOSE: {message}")
 
 def discover_tests(test_dir):
     """
@@ -62,75 +70,122 @@ def run_test_action(args):
     3. Executing it on the device via SDB shell.
     4. Fetching XML results from the device.
     5. Parsing the XML results.
-    6. Generating a basic HTML report.
+    6. Generating a basic HTML report for each.
     """
-    local_test_path = os.path.join(args.test_dir, args.test_name)
-
-    print(f"Attempting to run test: {args.test_name}")
-    print(f"  Local path: {os.path.abspath(local_test_path)}")
-
-    if not os.path.isfile(local_test_path):
-        print(f"Error: Test executable '{args.test_name}' not found in '{os.path.abspath(args.test_dir)}'.")
+    all_tests = discover_tests(args.test_dir)
+    if not all_tests:
+        print(f"No test executables found in directory: {os.path.abspath(args.test_dir)}")
         return
 
-    mode = os.stat(local_test_path).st_mode
-    if not (mode & stat.S_IXUSR):
-        print(f"Error: Test '{args.test_name}' at '{local_test_path}' is not executable.")
+    matched_tests = fnmatch.filter(all_tests, args.test_pattern)
+
+    if not matched_tests:
+        print(f"No test executables found matching pattern: '{args.test_pattern}' in directory: {os.path.abspath(args.test_dir)}")
         return
 
-    # Ensure host results directory exists
+    print(f"Found {len(matched_tests)} test(s) matching pattern '{args.test_pattern}': {', '.join(matched_tests)}")
+    if args.gtest_filter:
+        log_verbose(f"GTest filter '{args.gtest_filter}' will be applied to each matched test.", args)
+    print("-" * 30)
+
+    successful_tests = 0
+    failed_tests = 0
+
+    # Ensure host results directory exists (can be done once here)
     if not os.path.exists(DEFAULT_HOST_RESULTS_DIR):
         try:
             os.makedirs(DEFAULT_HOST_RESULTS_DIR)
-            print(f"Created host results directory: {DEFAULT_HOST_RESULTS_DIR}")
+            log_verbose(f"Created host results directory: {DEFAULT_HOST_RESULTS_DIR}", args)
         except OSError as e:
-            print(f"Error creating host results directory '{DEFAULT_HOST_RESULTS_DIR}': {e}")
+            print(f"Error creating host results directory '{DEFAULT_HOST_RESULTS_DIR}': {e}. Aborting.")
             return
 
+    for test_index, test_executable_name in enumerate(matched_tests):
+        log_verbose(f"Processing test {test_index + 1}/{len(matched_tests)}: '{test_executable_name}'", args)
+        
+        # Note: _execute_single_test_workflow will use the original 'args' object.
+        # If it needed to modify args per-test, a copy would be better here.
+        # For now, it's reading test_executable_name and args.test_dir, args.gtest_filter etc.
+        # which are fine.
+        if _execute_single_test_workflow(test_executable_name, args):
+            successful_tests += 1
+        else:
+            failed_tests += 1
+        print("-" * 30) # Separator for each test's output
 
-    remote_test_executable_path = os.path.join(DEFAULT_REMOTE_TEST_DIR, "bin", args.test_name) # Store tests in a 'bin' subdirectory on remote
-    # DEFAULT_REMOTE_RESULTS_DIR is now a global constant
+    if len(matched_tests) > 1:
+        print("\n--- Overall Summary ---")
+        print(f"Total tests processed: {len(matched_tests)}")
+        print(f"Successful workflows: {successful_tests}")
+        print(f"Failed/Skipped workflows: {failed_tests}")
+        print("----------------------")
 
+
+def _execute_single_test_workflow(test_executable_name, args):
+    """
+    Encapsulates the logic for processing a single test executable.
+    Returns True if the workflow completed without critical errors, False otherwise.
+    """
+    # Create a copy of args for this specific test run to correctly set 'test_name' attribute
+    # This 'test_name' is used by some underlying functions implicitly.
+    current_run_args = argparse.Namespace(**vars(args))
+    current_run_args.test_name = test_executable_name 
+
+    local_test_path = os.path.join(current_run_args.test_dir, current_run_args.test_name)
+
+    log_verbose(f"Starting workflow for test: {current_run_args.test_name}", current_run_args)
+    log_verbose(f"Local path: {os.path.abspath(local_test_path)}", current_run_args)
+
+    if not os.path.isfile(local_test_path):
+        print(f"  Error: Test executable '{current_run_args.test_name}' not found at '{os.path.abspath(local_test_path)}'. Skipping.")
+        return False
+    mode = os.stat(local_test_path).st_mode
+    if not (mode & stat.S_IXUSR):
+        print(f"  Error: Test '{current_run_args.test_name}' at '{local_test_path}' is not executable. Skipping.")
+        return False
+    
+    remote_test_executable_path = os.path.join(DEFAULT_REMOTE_TEST_DIR, "bin", current_run_args.test_name)
+    
     try:
-        print(f"Pushing '{local_test_path}' to '{remote_test_executable_path}' on device...")
-        push_file_to_device(local_test_path, remote_test_executable_path, args)
+        push_file_to_device(local_test_path, remote_test_executable_path, current_run_args)
 
-        print(f"Running '{remote_test_executable_path}' on device...")
-        # The XML filename on the device will be based on the test name
-        remote_xml_filename = f"{os.path.splitext(args.test_name)[0]}_results.xml"
-        run_test_on_device(remote_test_executable_path, DEFAULT_REMOTE_RESULTS_DIR, remote_xml_filename, args)
+        remote_xml_filename = f"{os.path.splitext(current_run_args.test_name)[0]}_results.xml"
+        run_test_on_device(remote_test_executable_path, DEFAULT_REMOTE_RESULTS_DIR, remote_xml_filename, current_run_args)
+        log_verbose(f"Test '{current_run_args.test_name}' execution completed on device.", current_run_args)
 
-        print(f"Test '{args.test_name}' execution completed on device.")
-
-        # Fetch results
         remote_xml_filepath = os.path.join(DEFAULT_REMOTE_RESULTS_DIR, remote_xml_filename)
         local_xml_filepath = os.path.join(DEFAULT_HOST_RESULTS_DIR, remote_xml_filename)
 
-        print(f"Fetching results from '{remote_xml_filepath}' to '{local_xml_filepath}'...")
-        if fetch_file_from_device(remote_xml_filepath, local_xml_filepath, args):
-            print(f"Results XML fetched successfully to {local_xml_filepath}")
+        if fetch_file_from_device(remote_xml_filepath, local_xml_filepath, current_run_args):
+            log_verbose(f"Results XML fetched to {local_xml_filepath}", current_run_args)
             
+            log_verbose(f"Parsing XML result file: {local_xml_filepath}", current_run_args)
             parsed_data = parse_gtest_xml(local_xml_filepath)
             if parsed_data:
-                report_base_filename = f"{os.path.splitext(args.test_name)[0]}_report"
+                report_base_filename = f"{os.path.splitext(current_run_args.test_name)[0]}_report"
                 report_timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
                 report_filename = f"{report_base_filename}_{report_timestamp}.html"
                 report_filepath = os.path.join(DEFAULT_HOST_RESULTS_DIR, report_filename)
                 
+                log_verbose(f"Generating HTML report: {report_filepath}", current_run_args)
                 generate_html_report(parsed_data, report_filepath)
-                print(f"HTML Test Report generated at: {os.path.abspath(report_filepath)}")
+                print(f"  HTML Test Report generated at: {os.path.abspath(report_filepath)}") # Keep non-verbose
             else:
-                print("Failed to parse GTest XML results.")
+                print(f"  Failed to parse GTest XML results for '{current_run_args.test_name}'.") # Keep non-verbose
+                # Consider returning False here if parsing is critical for success
         else:
-            print(f"Failed to fetch test results XML from '{remote_xml_filepath}'.")
+            print(f"  Failed to fetch test results XML from '{remote_xml_filepath}' for '{current_run_args.test_name}'.") # Keep non-verbose
+            return False # If results cannot be fetched, it's a failure of the workflow for this test.
+
+        return True # Workflow for this test succeeded
 
     except RuntimeError as e:
-        print(f"Error during SDB operation or test execution: {e}")
-        print("Please ensure the Tizen device is connected, authorized, and SDB is correctly configured.")
-        print("You can specify the SDB path using --sdb-path and target ID using --target-id.")
-    except FileNotFoundError: # Specifically for SDB executable not found
-        print(f"Error: SDB executable ('{args.sdb_path or SDB_EXECUTABLE}') not found. Is it in your PATH or specified correctly via --sdb-path?")
-
+        print(f"  Error during SDB operation or test execution for '{current_run_args.test_name}': {e}") # Keep non-verbose
+        return False
+    except FileNotFoundError as e: # Specifically for SDB executable not found
+        print(f"  Error: SDB executable ('{current_run_args.sdb_path or SDB_EXECUTABLE}') not found. Aborting all tests.")
+        raise # Re-raise to stop the entire run_test_action
+    
 
 def execute_sdb_command(sdb_cmd_list, args, check=True):
     """
@@ -161,16 +216,18 @@ def execute_sdb_command(sdb_cmd_list, args, check=True):
     # Add the rest of the SDB command (already includes sdb_executable placeholder)
     full_cmd.extend(sdb_cmd_list[1:])
 
-
-    # TODO: Add verbose printing if args.verbose: print(f"Executing SDB command: {' '.join(full_cmd)}")
+    log_verbose(f"Executing SDB: {' '.join(full_cmd)}", args, level=1)
     try:
-        process = subprocess.run(full_cmd, capture_output=True, text=True, check=False) # check=False to handle manually
+        process = subprocess.run(full_cmd, capture_output=True, text=True, check=False)
+        if process.stderr and args.verbose > 1:
+            log_verbose(f"SDB STDERR for command {' '.join(full_cmd)}:\n{process.stderr.strip()}", args, level=2)
+        
         if check and process.returncode != 0:
             error_message = (
                 f"SDB command failed with exit code {process.returncode}.\n"
                 f"Command: {' '.join(full_cmd)}\n"
                 f"Stdout: {process.stdout.strip()}\n"
-                f"Stderr: {process.stderr.strip()}"
+                f"Stderr: {process.stderr.strip()}" # Stderr is included here for all users on error
             )
             raise RuntimeError(error_message)
         return process
@@ -196,14 +253,14 @@ def push_file_to_device(local_path, remote_path, args):
     # SDB shell mkdir behavior: if path is /opt/usr/foo/bar, then /opt/usr/foo must exist.
     # `mkdir -p` handles creation of parent directories.
     mkdir_cmd = [SDB_EXECUTABLE, "shell", f"mkdir -p {remote_dir}"]
-    print(f"  Creating remote directory (if needed): {remote_dir}")
-    execute_sdb_command(mkdir_cmd, args) # Let it raise error if fails
+    log_verbose(f"Ensuring remote directory exists: {remote_dir}", args)
+    execute_sdb_command(mkdir_cmd, args)
 
     # Push the file
     push_cmd = [SDB_EXECUTABLE, "push", local_path, remote_path]
-    print(f"  Pushing file: {local_path} -> {remote_path}")
+    log_verbose(f"Pushing {local_path} to {remote_path}", args)
     execute_sdb_command(push_cmd, args)
-    print(f"  File '{os.path.basename(local_path)}' pushed successfully to '{remote_path}'.")
+    log_verbose(f"File '{os.path.basename(local_path)}' pushed successfully to '{remote_path}'.", args)
 
 
 def run_test_on_device(remote_test_executable_path, remote_results_dir, args):
@@ -220,21 +277,25 @@ def run_test_on_device(remote_test_executable_path, remote_results_dir, args):
 
     # Ensure results directory exists on device
     mkdir_cmd = [SDB_EXECUTABLE, "shell", f"mkdir -p {target_remote_results_dir}"]
-    print(f"  Creating remote results directory (if needed): {target_remote_results_dir}")
+    log_verbose(f"Ensuring remote results directory exists: {target_remote_results_dir}", args)
     execute_sdb_command(mkdir_cmd, args)
 
     # Make the test executable on the device
     chmod_cmd = [SDB_EXECUTABLE, "shell", f"chmod +x {remote_test_executable_path}"]
-    print(f"  Making test executable on device: {remote_test_executable_path}")
+    log_verbose(f"Making test executable on device: {remote_test_executable_path}", args)
     execute_sdb_command(chmod_cmd, args)
 
-    # Construct and run the test command
-    # Note: Ensure device paths are quoted if they can contain spaces.
-    # Using the specific filename for XML output.
-    test_cmd_on_device = f"{remote_test_executable_path} --gtest_output=xml:{xml_output_path}"
+    # Construct the test command
+    cmd_parts = [remote_test_executable_path, f"--gtest_output=xml:{xml_output_path}"]
+    if args.gtest_filter:
+        cmd_parts.append(f"--gtest_filter={args.gtest_filter}")
+    
+    test_cmd_on_device = " ".join(cmd_parts)
+    log_verbose(f"Exact test command on device: {test_cmd_on_device}", args)
     sdb_shell_cmd = [SDB_EXECUTABLE, "shell", test_cmd_on_device]
 
-    print(f"  Executing test on device: {test_cmd_on_device}")
+    # Standard print for command execution, not verbose specific
+    print(f"  Executing test on device: {test_cmd_on_device}") 
     result = execute_sdb_command(sdb_shell_cmd, args, check=False) # Don't check, GTest returns non-zero for failures
 
     print("--- Device Test Output ---")
@@ -267,16 +328,16 @@ def fetch_file_from_device(remote_path, local_path, args):
     if not os.path.exists(local_dir):
         try:
             os.makedirs(local_dir)
-            print(f"  Created local directory for results: {local_dir}")
+            log_verbose(f"Created local directory for results: {local_dir}", args)
         except OSError as e:
-            print(f"  Error creating local directory '{local_dir}': {e}")
+            print(f"  Error creating local directory '{local_dir}': {e}") # Keep non-verbose
             return False
 
     pull_cmd = [SDB_EXECUTABLE, "pull", remote_path, local_path]
-    print(f"  Fetching file: {remote_path} -> {local_path}")
+    log_verbose(f"Attempting to pull {remote_path} to {local_path}", args)
     try:
-        execute_sdb_command(pull_cmd, args) # Let it raise error if fails
-        print(f"  File '{os.path.basename(remote_path)}' fetched successfully.")
+        execute_sdb_command(pull_cmd, args)
+        log_verbose(f"File '{os.path.basename(remote_path)}' fetched successfully.", args)
         return True
     except RuntimeError as e:
         print(f"  Error fetching file: {e}")
@@ -462,7 +523,13 @@ def main():
     parser = argparse.ArgumentParser(
         description="Tizen Vendor Test Suite (VTS) CLI Harness. "\
                     "Manages deployment and execution of tests on Tizen devices, and processes results.",
-        formatter_class=argparse.RawTextHelpFormatter # To allow newlines in help
+        formatter_class=argparse.RawTextHelpFormatter 
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="count",
+        default=0,
+        help="Increase output verbosity. Can be used multiple times (e.g., -v, -vv)."
     )
     parser.add_argument(
         "--test-dir",
@@ -489,7 +556,6 @@ def main():
         default=DEFAULT_REMOTE_TEST_DIR,
         help=f"Root directory on the Tizen device for VTS tests and results.\n(default: {DEFAULT_REMOTE_TEST_DIR})"
     )
-    # TODO: Add --verbose flag and integrate its usage in execute_sdb_command
 
     subparsers = parser.add_subparsers(dest="command", title="Available commands", 
                                      help="Command to execute. Use '<command> --help' for more details.")
@@ -501,8 +567,14 @@ def main():
     list_parser.set_defaults(func=list_tests_action)
 
     # Subparser for the 'run_test' command
-    run_parser = subparsers.add_parser("run_test", help="Run a specific test executable on a Tizen device.")
-    run_parser.add_argument("test_name", help="Name of the test executable to run (must be present in --test-dir).")
+    run_parser = subparsers.add_parser("run_test", help="Run test executable(s) matching a pattern on a Tizen device.")
+    run_parser.add_argument("test_pattern", help="Name or pattern (e.g., 'sample_*_test') of the test executable(s) to run.")
+    run_parser.add_argument(
+        "--gtest_filter",
+        default=None,
+        metavar="<GTEST_FILTER_PATTERN>",
+        help="GTest filter pattern to select specific tests within the executable (e.g., 'TestSuite.*', '*Positive*')."
+    )
     run_parser.set_defaults(func=run_test_action)
 
     args = parser.parse_args()
