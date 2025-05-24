@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Tizen VTS - Sample Device Features Declaration
+    This file illustrates how a device's features could be declared.
+    This could be used by an advanced VTS to conditionally execute tests.
+    The current VTS harness does not yet parse or utilize this file.
+-->
+<DeviceFeatures tizenVersion="6.5" profile="wearable">
+    <FeatureGroup name="Hardware">
+        <Feature name="tizen.hw.audio.playback" available="true" version="1.0"/>
+        <Feature name="tizen.hw.audio.capture" available="true" version="1.0"/>
+        <Feature name="tizen.hw.display.lcd" available="true" width="360" height="360" dpi="302"/>
+        <Feature name="tizen.hw.display.touch" available="true" type="capacitive"/>
+        <Feature name="tizen.hw.sensor.accelerometer" available="true"/>
+        <Feature name="tizen.hw.sensor.gyroscope" available="true"/>
+        <Feature name="tizen.hw.sensor.heart_rate_monitor" available="true"/>
+        <Feature name="tizen.hw.sensor.gps" available="false"/>
+        <Feature name="tizen.hw.connectivity.bluetooth" available="true" version="5.0"/>
+        <Feature name="tizen.hw.connectivity.wifi" available="true" standard="802.11n"/>
+        <Feature name="tizen.hw.connectivity.nfc" available="true"/>
+        <Feature name="tizen.hw.memory.ram" size_mb="768"/>
+        <Feature name="tizen.hw.storage.internal" size_gb="4"/>
+    </FeatureGroup>
+
+    <FeatureGroup name="Software">
+        <Feature name="tizen.feature.screen.always_on" available="true"/>
+        <Feature name="tizen.feature.nfc.card_emulation" available="true"/>
+        <Feature name="tizen.feature.nfc.p2p" available="false"/>
+        <Feature name="tizen.feature.speech.recognition" available="true"/>
+        <Feature name="tizen.feature.camera" available="false"/>
+        <Feature name="tizen.feature.opengles.version.20" available="true">
+            <!-- Specific version of OpenGL ES 2.0 -->
+        </Feature>
+        <Feature name="tizen.feature.opengles.version.30" available="false"/>
+    </FeatureGroup>
+
+    <FeatureGroup name="HALs">
+        <!-- Example: Specify versions or types of HALs implemented -->
+        <Feature name="tizen.hal.sensors" version="2.1"/>
+        <Feature name="tizen.hal.audio_out" version="1.5"/>
+    </FeatureGroup>
+
+    <FeatureGroup name="APIs">
+        <!-- Example: Specific API versions or supported modules -->
+        <Feature name="tizen.api.version" major="6" minor="5" patch="0"/>
+        <Feature name="tizen.api.module.messaging.sms" available="true"/>
+        <Feature name="tizen.api.module.location.gps" available="false"/> <!-- Consistent with hw.sensor.gps -->
+    </FeatureGroup>
+
+</DeviceFeatures>
