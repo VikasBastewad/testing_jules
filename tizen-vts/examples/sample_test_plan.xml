@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 
+    Tizen VTS - Sample Test Plan 
+    This file illustrates a potential structure for defining test plans.
+    The current VTS harness does not yet parse or utilize this file directly.
+-->
+<TestPlan name="Full_Compliance_Run_Nightly">
+    <Description>
+        A comprehensive test plan covering major compliance areas for Tizen devices.
+        Intended for nightly execution.
+    </Description>
+
+    <GlobalSettings>
+        <Setting name="DefaultTimeoutPerTest" value="300" unit="seconds"/>
+        <Setting name="StopOnFailure" value="false"/>
+        <Setting name="ReportFormat" value="HTML"/>
+        <Setting name="SDBTargetID" value=""/> <!-- Empty means default or first device -->
+    </GlobalSettings>
+
+    <TestGroup name="HAL_Validation">
+        <Description>Tests for Hardware Abstraction Layer implementations.</Description>
+        <TestExecutable name="sample_hal_test">
+            <Parameter name="gtest_filter" value="*Power*"/> <!-- Example: Run only tests with 'Power' in their name -->
+        </TestExecutable>
+        <TestExecutable name="audio_hal_tests"/>
+        <TestExecutable name="sensor_hal_tests">
+            <Parameter name="timeout" value="600"/>
+        </TestExecutable>
+    </TestGroup>
+
+    <TestGroup name="Kernel_Interface_Tests">
+        <Description>Tests for kernel /proc and /sys interfaces, and system calls.</Description>
+        <TestExecutable name="sample_kernel_test"/>
+        <TestExecutable name="filesystem_kernel_tests"/>
+    </TestGroup>
+
+    <TestGroup name="Native_API_Tests">
+        <Description>Tests for Tizen Native APIs.</Description>
+        <TestExecutable name="capi_network_tests"/>
+        <TestExecutable name="capi_multimedia_tests"/>
+        <!-- Specific test cases can be filtered if needed -->
+        <TestExecutable name="napi_specific_module_tests">
+            <Parameter name="gtest_filter" value="SpecificModuleTestSuite.SpecificFunctionTest"/>
+        </TestExecutable>
+    </TestGroup>
+
+    <TestGroup name="Device_Capability_Tests">
+        <Description>Tests for verifying advertised device capabilities.</Description>
+        <TestExecutable name="device_info_capability_test"/>
+        <TestExecutable name="screen_capability_test"/>
+    </TestGroup>
+
+    <SubmissionSettings>
+        <Setting name="SubmitResultsToURL" value="http://example.com/vts_results_submission"/>
+        <Setting name="IncludeDeviceLogs" value="true"/>
+    </SubmissionSettings>
+
+</TestPlan>
